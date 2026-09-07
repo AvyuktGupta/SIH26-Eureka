@@ -1,0 +1,76 @@
+services:
+  osm-download:
+    image: python:3.11-slim
+    volumes:
+      - ./scripts/download_osm.py:/download_osm.py:ro
+      - osrm-data:/data
+    environment:
+      OSM_OUT: /data/kullu-manali.osm
+    command: python /download_osm.py
+
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:v5.27.1
+    depends_on:
+      osm-download:
+        condition: service_completed_successfully
+    volumes:
+      - osrm-data:/data
+      - ./scripts/osrm-entrypoint.sh:/osrm-entrypoint.sh:ro
+    ports:
+      - "5000:5000"
+    entrypoint:
+      - /bin/sh
+      - -c
+      - sed -i 's/\r$//' /osrm-entrypoint.sh && /bin/sh /osrm-entrypoint.sh
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+  ollama-pull:
+    image: ollama/ollama:latest
+    depends_on:
+      - ollama
+    volumes:
+      - ollama:/root/.ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: "sleep 8 && ollama pull llama3.2:3b"
+
+  backend:
+    build: ./backend
+    depends_on:
+      - osrm
+      - ollama
+    environment:
+      OSRM_URL: http://osrm:5000
+      OLLAMA_URL: http://ollama:11434
+      OLLAMA_MODEL: llama3.2:3b
+      DATABASE_PATH: /data/apcs.db
+      MODELS_DIR: /data/models
+      GLACIER_STUB_DIR: /data/glacier_stub
+    volumes:
+      - apcs-data:/data
+      - ./data/glacier_stub:/data/glacier_stub:ro
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    depends_on:
+      - backend
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  osrm-data:
+  ollama:
+  apcs-data:

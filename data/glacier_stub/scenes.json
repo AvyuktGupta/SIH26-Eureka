@@ -1,0 +1,14 @@
+{
+  "beas_static_clear": {
+    "probability": 0.08,
+    "severity": 0.4,
+    "confidence": 0.4,
+    "note": "STUB: static clear-sky scene, not live satellite"
+  },
+  "beas_static_glof_watch": {
+    "probability": 0.62,
+    "severity": 0.85,
+    "confidence": 0.45,
+    "note": "STUB: static GLOF-watch scene for demo, not live satellite"
+  }
+}
