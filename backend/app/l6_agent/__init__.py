@@ -1,3 +1,3 @@
-from app.l6_agent.agent import invoke_agent
+from app.l6_agent.agent import invoke_agent, probe_ollama
 
-__all__ = ["invoke_agent"]
+__all__ = ["invoke_agent", "probe_ollama"]

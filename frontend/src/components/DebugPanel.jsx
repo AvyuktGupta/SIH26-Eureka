@@ -2,7 +2,8 @@ export default function DebugPanel({
   driving,
   demoMode,
   killWeather,
-  busy,
+  planning,
+  hasSession,
   onStart,
   onMode,
   onKill,
@@ -19,10 +20,10 @@ export default function DebugPanel({
       </p>
 
       <div className="btn-row">
-        <button onClick={onStart} disabled={busy}>
+        <button onClick={onStart} disabled={planning}>
           New route (Kullu → Manali)
         </button>
-        <button className={driving ? "danger" : "primary"} onClick={onDriveToggle} disabled={busy}>
+        <button className={driving ? "danger" : "primary"} onClick={onDriveToggle} disabled={planning}>
           {driving ? "Pause drive" : "Start drive"}
         </button>
       </div>
@@ -50,7 +51,7 @@ export default function DebugPanel({
         Kill weather API (fallback demo)
       </label>
 
-      <button onClick={onSpike} disabled={busy}>
+      <button onClick={onSpike} disabled={!hasSession || planning}>
         Inject one noisy spike
       </button>
 
@@ -61,6 +62,8 @@ export default function DebugPanel({
         <div><dt>Threshold</dt><dd>{stats.threshold ? "yes" : "no"}</dd></div>
         <div><dt>Hysteresis</dt><dd>{stats.hysteresis ? "confirmed" : "held"}</dd></div>
         <div><dt>LLM invoked</dt><dd>{stats.llm ? "yes" : "no"}</dd></div>
+        <div><dt>Ollama</dt><dd>{stats.ollama ?? "—"}</dd></div>
+        <div><dt>Following</dt><dd>{stats.following ?? "—"}</dd></div>
         <div><dt>Fallback</dt><dd>{stats.fallback ? "active" : "off"}</dd></div>
         <div><dt>ETA Δ</dt><dd>{stats.eta ?? "—"}</dd></div>
         <div><dt>Avoids flagged</dt><dd>{stats.avoids ?? "—"}</dd></div>

@@ -12,57 +12,86 @@ export default function App() {
   const [demoMode, setDemoMode] = useState("normal");
   const [killWeather, setKillWeather] = useState(false);
   const [driving, setDriving] = useState(false);
-  const [busy, setBusy] = useState(false);
+  const [planning, setPlanning] = useState(false);
   const [error, setError] = useState("");
-  const driveRef = useRef(null);
+
+  const drivingRef = useRef(false);
+  const sessionIdRef = useRef(null);
+  const demoModeRef = useRef(demoMode);
+  const killWeatherRef = useRef(killWeather);
+
+  drivingRef.current = driving;
+  sessionIdRef.current = session?.session_id ?? null;
+  demoModeRef.current = demoMode;
+  killWeatherRef.current = killWeather;
 
   useEffect(() => {
     getMeta().then(setMeta).catch((e) => setError(e.message));
   }, []);
 
-  async function plan(mode = demoMode) {
-    setBusy(true);
-    setError("");
+  function stopDriving() {
+    drivingRef.current = false;
     setDriving(false);
+  }
+
+  function startDriving() {
+    drivingRef.current = true;
+    setDriving(true);
+  }
+
+  async function plan(mode = demoModeRef.current) {
+    stopDriving();
+    setPlanning(true);
+    setError("");
     try {
       const data = await startSession({ demo_mode: mode });
       setSession(data.session);
       setTick(data.tick);
+      return data;
     } catch (e) {
       setError(e.message);
+      return null;
     } finally {
-      setBusy(false);
+      setPlanning(false);
     }
   }
 
-  async function step(extra = {}) {
-    if (!session) return;
-    setBusy(true);
-    try {
-      const data = await tickSession(session.session_id, {
-        demo_mode: demoMode,
-        kill_weather: killWeather,
-        ...extra,
-      });
-      setTick(data);
-    } catch (e) {
-      setError(e.message);
-      setDriving(false);
-    } finally {
-      setBusy(false);
-    }
+  async function step(extra = {}, { auto = false } = {}) {
+    const sid = sessionIdRef.current;
+    if (!sid) return null;
+    if (auto && !drivingRef.current) return null;
+    const data = await tickSession(sid, {
+      demo_mode: demoModeRef.current,
+      kill_weather: killWeatherRef.current,
+      ...extra,
+    });
+    if (auto && !drivingRef.current) return data;
+    setTick(data);
+    return data;
   }
 
   useEffect(() => {
-    if (!driving) {
-      clearInterval(driveRef.current);
-      return;
-    }
-    driveRef.current = setInterval(() => {
-      step();
-    }, 1600);
-    return () => clearInterval(driveRef.current);
-  }, [driving, session, demoMode, killWeather]);
+    if (!driving || !session?.session_id) return undefined;
+    let cancelled = false;
+    (async () => {
+      while (drivingRef.current && !cancelled) {
+        try {
+          await step({}, { auto: true });
+        } catch (e) {
+          if (!cancelled) {
+            setError(e.message);
+            stopDriving();
+            break;
+          }
+        }
+        if (!drivingRef.current || cancelled) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [driving, session?.session_id]);
 
   const overlay = tick?.overlay || [];
   const gate = tick?.gate;
@@ -86,6 +115,12 @@ export default function App() {
           : tick.alternate_route.avoids_flagged
             ? "yes"
             : "no",
+      following: tick?.following_alternate ? "alternate" : "original",
+      ollama: tick?.ollama?.reachable
+        ? tick.ollama.selected_model || "up"
+        : tick?.ollama?.error
+          ? "down"
+          : "—",
       notes: tick?.notes || [],
     }),
     [tick, gate, eta]
@@ -112,6 +147,7 @@ export default function App() {
           overlay={overlay}
           route={tick?.route || session?.route}
           alternate={tick?.alternate_route}
+          followingAlternate={!!tick?.following_alternate}
           vehicle={tick?.vehicle}
           origin={session?.origin}
           dest={session?.destination}
@@ -120,19 +156,20 @@ export default function App() {
           driving={driving}
           demoMode={demoMode}
           killWeather={killWeather}
-          busy={busy}
+          planning={planning}
+          hasSession={!!session}
           onStart={() => plan(demoMode)}
-          onMode={(m) => {
-            setDemoMode(m);
-          }}
+          onMode={setDemoMode}
           onKill={setKillWeather}
           onSpike={() => step({ inject_spike: true, step: false })}
-          onDriveToggle={() => {
+          onDriveToggle={async () => {
             if (!session) {
-              plan(demoMode).then(() => setDriving(true));
+              const data = await plan(demoMode);
+              if (data) startDriving();
               return;
             }
-            setDriving((v) => !v);
+            if (drivingRef.current) stopDriving();
+            else startDriving();
           }}
           stats={stats}
         />

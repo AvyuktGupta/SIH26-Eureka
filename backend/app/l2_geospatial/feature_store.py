@@ -61,9 +61,11 @@ def build_road_segment_risks(
     extra_precip_mm: float = 0.0,
     kill_weather: bool = False,
     weather_samples: list[WeatherSample] | None = None,
+    driven_lonlat: list[list[float]] | None = None,
 ) -> list[RoadSegmentRisk]:
     cells = tile_route(route_lonlat, H3_RESOLUTION, ring=1)
     centers = [cell_center(c) for c in cells]
+    driven = driven_lonlat or route_lonlat
 
     if weather_samples is None:
         weather_samples = []
@@ -82,7 +84,7 @@ def build_road_segment_risks(
     for cell, (lat, lon), ts in zip(cells, centers, terrain_samples):
         slope, aspect = _slope_aspect(cell, elev_by_h3)
         wx = _nearest_weather(lat, lon, weather_samples)
-        on_route = point_on_line(lat, lon, route_lonlat, max_m=450.0)
+        on_route = point_on_line(lat, lon, driven, max_m=450.0)
         row = RoadSegmentRisk(
             h3_index=cell,
             lat=lat,

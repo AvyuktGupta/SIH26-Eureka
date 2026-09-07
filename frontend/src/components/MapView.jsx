@@ -8,7 +8,7 @@ function riskColor(score, state) {
   return "#d45b4a";
 }
 
-export default function MapView({ overlay, route, alternate, vehicle, origin, dest }) {
+export default function MapView({ overlay, route, alternate, followingAlternate, vehicle, origin, dest }) {
   const routeLine = (route?.geometry?.coordinates || []).map(([lon, lat]) => [lat, lon]);
   const altLine = (alternate?.geometry?.coordinates || []).map(([lon, lat]) => [lat, lon]);
 
@@ -22,7 +22,7 @@ export default function MapView({ overlay, route, alternate, vehicle, origin, de
     >
       <TileLayer
         attribution='&copy; OpenStreetMap'
-        url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       <Pane name="h3pane" style={{ zIndex: 350 }}>
         {(overlay || []).map((cell) => (
@@ -39,12 +39,25 @@ export default function MapView({ overlay, route, alternate, vehicle, origin, de
         ))}
       </Pane>
       {routeLine.length > 1 && (
-        <Polyline positions={routeLine} pathOptions={{ color: "#7eb6ff", weight: 5, opacity: 0.95 }} />
+        <Polyline
+          positions={routeLine}
+          pathOptions={{
+            color: "#7eb6ff",
+            weight: followingAlternate ? 3 : 5,
+            opacity: followingAlternate ? 0.45 : 0.95,
+            dashArray: followingAlternate ? "6 8" : null,
+          }}
+        />
       )}
       {altLine.length > 1 && (
         <Polyline
           positions={altLine}
-          pathOptions={{ color: "#ffb25b", weight: 5, opacity: 0.9, dashArray: "10 8" }}
+          pathOptions={{
+            color: "#ffb25b",
+            weight: followingAlternate ? 6 : 5,
+            opacity: 0.95,
+            dashArray: followingAlternate ? null : "10 8",
+          }}
         />
       )}
       {origin && <CircleMarker center={[origin.lat, origin.lon]} radius={6} pathOptions={{ color: "#9ad0ff", fillOpacity: 1 }} />}

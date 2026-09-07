@@ -144,6 +144,7 @@ class TickResult(BaseModel):
     vehicle: dict[str, float]
     route: Optional[RouteCandidate] = None
     alternate_route: Optional[RouteCandidate] = None
+    following_alternate: bool = False
     scores: list[RiskScore] = Field(default_factory=list)
     gate: GateDecision
     alert: Optional[DriverAlert] = None
@@ -151,6 +152,7 @@ class TickResult(BaseModel):
     weather_killed: bool = False
     demo_mode: str = "normal"
     notes: list[str] = Field(default_factory=list)
+    ollama: dict[str, Any] = Field(default_factory=dict)
 
 
 DRIVER_ALERT_JSON_SCHEMA: dict[str, Any] = {

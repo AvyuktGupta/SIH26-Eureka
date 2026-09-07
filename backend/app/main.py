@@ -21,6 +21,7 @@ from app.config import (
 from app.l2_geospatial.corridor import cell_boundary
 from app.l3_prediction.predict import ensure_models
 from app.l1_ingestion.poller import start_poller
+from app.l6_agent.agent import probe_ollama
 from app.runtime.tick import SESSIONS, run_tick, session_snapshot, start_session
 
 log = logging.getLogger("apcs")
@@ -72,7 +73,8 @@ class TickBody(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "service": "apcs-backend"}
+    ollama = probe_ollama()
+    return {"ok": True, "service": "apcs-backend", "ollama": ollama}
 
 
 @app.get("/api/meta")

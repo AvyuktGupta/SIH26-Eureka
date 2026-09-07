@@ -32,7 +32,7 @@ from app.l2_geospatial.feature_store import build_road_segment_risks
 from app.l3_prediction.predict import boost_hazard_zone, predict_segment
 from app.l4_fusion.fusion_engine import RiskFusionEngine
 from app.l5_routing.routing_engine import OsrmUnavailable, RoutingEngine
-from app.l6_agent.agent import invoke_agent
+from app.l6_agent.agent import invoke_agent, probe_ollama
 
 
 @dataclass
@@ -52,6 +52,7 @@ class SessionState:
     last_gate: GateDecision | None = None
     last_alert: Any = None
     llm_fired_for_confirmed: bool = False
+    adopted_alternate: bool = False
     notes: list[str] = field(default_factory=list)
 
 
@@ -74,6 +75,20 @@ def _point_along(geometry: dict, t: float) -> tuple[float, float]:
     lon = coords[i][0] + frac * (coords[i + 1][0] - coords[i][0])
     lat = coords[i][1] + frac * (coords[i + 1][1] - coords[i][1])
     return lat, lon
+
+
+def _nearest_progress(geometry: dict, lat: float, lon: float) -> float:
+    coords = geometry.get("coordinates") or []
+    if len(coords) < 2:
+        return 0.0
+    best_i = 0
+    best_d = 1e18
+    for i, (x, y) in enumerate(coords):
+        d = (y - lat) ** 2 + (x - lon) ** 2
+        if d < best_d:
+            best_d = d
+            best_i = i
+    return best_i / (len(coords) - 1)
 
 
 def start_session(
@@ -103,6 +118,23 @@ def _active_geometry(state: SessionState) -> list[list[float]]:
         [state.origin[1], state.origin[0]],
         [state.dest[1], state.dest[0]],
     ]
+
+
+def _driven_geometry(state: SessionState) -> dict:
+    if state.adopted_alternate and state.alternate:
+        return state.alternate.geometry
+    if state.route:
+        return state.route.geometry
+    return {"coordinates": _active_geometry(state)}
+
+
+def _tile_line(state: SessionState) -> list[list[float]]:
+    line = _active_geometry(state)
+    if state.alternate:
+        extra = list(state.alternate.geometry.get("coordinates") or [])
+        if extra:
+            line = line + extra
+    return line
 
 
 def run_tick(
@@ -135,7 +167,8 @@ def run_tick(
 
     notes: list[str] = []
     fallback_active = False
-    coords = _active_geometry(state)
+    coords = _tile_line(state)
+    driven_coords = list(_driven_geometry(state).get("coordinates") or coords)
 
     # --- L1 / L2 ---
     try:
@@ -146,6 +179,7 @@ def run_tick(
             demo_mode=state.demo_mode,
             extra_precip_mm=state.extra_precip_mm,
             kill_weather=state.kill_weather,
+            driven_lonlat=driven_coords,
         )
     except WeatherFeedDown:
         fallback_active = True
@@ -157,6 +191,7 @@ def run_tick(
             demo_mode="normal",
             extra_precip_mm=0.0,
             kill_weather=True,
+            driven_lonlat=driven_coords,
         )
         # Force stale flags; fusion will apply terrain prior.
         for row in rows:
@@ -196,40 +231,65 @@ def run_tick(
     )
     gate = _fusion.gate(scores)
 
-    # --- L5 only if hysteresis confirmed ---
-    alternate = None
+    # --- L5 only if hysteresis confirmed; compute alternate once, then keep it ---
+    alternate = state.alternate
     if gate.hysteresis_confirmed:
-        try:
-            primary, alternate = _routing.compute_route(
-                state.origin,
-                state.dest,
-                scores=scores,
-                flagged_h3=gate.flagged_h3,
-                want_alternate=True,
-            )
-            state.route = primary
-            state.alternate = alternate
+        if not state.adopted_alternate:
+            try:
+                current_lat, current_lon = _point_along(
+                    _driven_geometry(state), state.progress
+                )
+                primary, alternate = _routing.compute_route(
+                    state.origin,
+                    state.dest,
+                    scores=scores,
+                    flagged_h3=gate.flagged_h3,
+                    want_alternate=True,
+                )
+                # Keep the original as `route` (blue). Drive the alternate when we have one.
+                state.route = primary
+                state.alternate = alternate
+                if alternate:
+                    state.progress = _nearest_progress(
+                        alternate.geometry, current_lat, current_lon
+                    )
+                    state.adopted_alternate = True
+                    notes.append(
+                        "vehicle switched onto the OSRM alternate (LLM did not invent the path)"
+                    )
+                    notes.append(
+                        f"alternate avoids_flagged={alternate.avoids_flagged} "
+                        f"eta_delta_s={alternate.eta_delta_s:.0f}"
+                    )
+                else:
+                    notes.append("L5 found no alternate; staying on the original OSRM route")
+                gate.reroute_invoked = True
+                gate.stopped_at = "L5"
+            except OsrmUnavailable as exc:
+                notes.append(f"OSRM unavailable during reroute: {exc}")
+                gate.reroute_invoked = False
+        else:
             gate.reroute_invoked = True
             gate.stopped_at = "L5"
-            notes.append("L5 recomputed risk-weighted route via OSRM (LLM did not invent the path)")
-            if alternate:
-                notes.append(
-                    f"alternate avoids_flagged={alternate.avoids_flagged} "
-                    f"eta_delta_s={alternate.eta_delta_s:.0f}"
-                )
-        except OsrmUnavailable as exc:
-            notes.append(f"OSRM unavailable during reroute: {exc}")
-            gate.reroute_invoked = False
+            alternate = state.alternate
+            notes.append("L5 holding previously computed OSRM alternate")
     else:
         gate.reroute_invoked = False
         gate.llm_invoked = False
         gate.stopped_at = "L4"
 
-    # --- L6 only on confirmed TRANSITION, not every confirmed tick ---
+    # --- L6 on confirmed TRANSITION, and retry if Ollama was down last time ---
     alert = None
     confirmed_now = gate.hysteresis_confirmed
-    if confirmed_now and not state.llm_fired_for_confirmed:
-        alert = invoke_agent(
+    template_pending = (
+        state.last_alert is not None
+        and getattr(state.last_alert, "source", "") == "llm_unavailable_template"
+    )
+    ollama = probe_ollama(force=template_pending)
+    first_llm_try = confirmed_now and state.last_alert is None
+    retry_llm = confirmed_now and template_pending and bool(ollama.get("reachable"))
+    if first_llm_try or retry_llm:
+        alert, llm_err = invoke_agent(
             state.session_id,
             scores,
             gate.flagged_h3,
@@ -238,35 +298,41 @@ def run_tick(
             state.demo_mode,
             fallback_active,
         )
-        state.llm_fired_for_confirmed = True
         state.last_alert = alert
-        gate.llm_invoked = True
-        gate.stopped_at = "L6"
-        notes.append("L6 gated agent fired on confirmed transition (JSON schema only)")
+        if alert.source == "llm":
+            state.llm_fired_for_confirmed = True
+            gate.llm_invoked = True
+            gate.stopped_at = "L6"
+            notes.append("L6 gated agent fired on confirmed transition (JSON schema only)")
+        else:
+            state.llm_fired_for_confirmed = False
+            gate.llm_invoked = False
+            gate.stopped_at = "L6"
+            notes.append(
+                "L6 template fallback — will retry Ollama on the next confirmed tick"
+                + (f" ({llm_err})" if llm_err else "")
+            )
     elif confirmed_now:
         alert = state.last_alert
         gate.llm_invoked = False
         gate.stopped_at = "L6" if alert else "L5"
         notes.append("transition already alerted — LLM not re-invoked")
     else:
-        # Reset so a future new confirmation can fire again after cooling.
         if all(s.hysteresis_state == HysteresisState.NORMAL for s in scores if s.on_active_route):
             state.llm_fired_for_confirmed = False
         gate.llm_invoked = False
 
     state.last_scores = scores
     state.last_gate = gate
-    vehicle_lat, vehicle_lon = _point_along(
-        (state.route.geometry if state.route else {"coordinates": coords}),
-        state.progress,
-    )
+    vehicle_lat, vehicle_lon = _point_along(_driven_geometry(state), state.progress)
 
     return TickResult(
         session_id=state.session_id,
         tick=state.tick,
         vehicle={"lat": vehicle_lat, "lon": vehicle_lon, "progress": state.progress},
         route=state.route,
-        alternate_route=(alternate or state.alternate) if confirmed_now else None,
+        alternate_route=state.alternate if (confirmed_now or state.adopted_alternate) else None,
+        following_alternate=state.adopted_alternate,
         scores=scores,
         gate=gate,
         alert=alert,
@@ -274,6 +340,7 @@ def run_tick(
         weather_killed=state.kill_weather,
         demo_mode=state.demo_mode,
         notes=notes,
+        ollama=ollama,
     )
 
 
